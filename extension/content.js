@@ -1,10 +1,35 @@
 let isPlaying = false;
-let currentPlaylist = [];
+let currentPlaylist = []; // Array of { author, fullText, sentences: string[], element }
 let currentPlaylistIndex = 0;
+let currentSentenceIndex = 0;
 let currentAudioElement = null;
 let playSessionId = 0; // Ensures strict singleton playback
 let processedTexts = new Set(); // Tracks unique author+text combinations
 let isUIVisible = true;
+let currentSpeed = 1.0;
+let nextAudioBlob = null; // Pre-buffering queue for smooth transitions
+let isFetchingNext = false;
+const SPEED_OPTIONS = [0.8, 0.9, 1.0, 1.2, 1.4, 1.6];
+
+// Helper to determine if text is mostly non-English (e.g. pure Chinese/Japanese)
+// Kokoro's English models fail hard on these, so we omit them from the playlist.
+function isOmittedText(text) {
+  if (text.length < 5) return false;
+  const englishCharRatio = (text.match(/[a-zA-Z]/g) || []).length / text.length;
+  return englishCharRatio < 0.7;
+}
+
+// Detect SPA Navigation (URL Changes) to reset playlists automatically
+let currentUrl = location.href;
+new MutationObserver(() => {
+  const url = location.href;
+  if (url !== currentUrl) {
+    console.log("[Drama Reader] Navigation detected. Resetting playlist.");
+    currentUrl = url;
+    stopDrama();
+    processedTexts.clear();
+  }
+}).observe(document, { subtree: true, childList: true });
 
 function injectUI() {
   console.log("[Drama Reader] Injecting Modern UI into", window.location.href);
@@ -36,26 +61,83 @@ function injectUI() {
 
   const trackInfo = document.createElement('div');
   trackInfo.id = 'drama-track-info';
-  trackInfo.style.cssText = `font-size: 13px; font-weight: 500; color: #9ca3af; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 250px;`;
+  trackInfo.style.cssText = `font-size: 13px; font-weight: 500; color: #9ca3af; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 280px;`;
   trackInfo.textContent = 'Drama Reader Ready';
 
-  const closeBtn = document.createElement('button');
-  closeBtn.innerHTML = '✕';
-  closeBtn.style.cssText = `background: transparent; border: none; color: #9ca3af; cursor: pointer; font-size: 14px;`;
-  closeBtn.onclick = () => stopDrama();
-
   header.appendChild(trackInfo);
-  header.appendChild(closeBtn);
 
   // --- Controls ---
   const controls = document.createElement('div');
   controls.style.cssText = `display: flex; justify-content: center; align-items: center; gap: 16px;`;
+
+  const speedContainer = document.createElement('div');
+  speedContainer.style.cssText = `position: relative; display: flex; align-items: center; justify-content: center;`;
+
+  const speedBtn = document.createElement('button');
+  speedBtn.id = 'drama-speed-btn';
+  speedBtn.textContent = '1.0x';
+  speedBtn.onclick = toggleSpeedMenu;
+  speedBtn.style.cssText = `
+    background: transparent;
+    color: #e5e7eb;
+    border: none;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    width: 44px;
+    height: 40px;
+    border-radius: 8px;
+    transition: all 0.2s ease;
+  `;
+  speedBtn.onmouseover = () => { speedBtn.style.background = 'rgba(255,255,255,0.1)'; };
+  speedBtn.onmouseout = () => { speedBtn.style.background = 'transparent'; };
+
+  const speedMenu = document.createElement('div');
+  speedMenu.id = 'drama-speed-menu';
+  speedMenu.style.cssText = `
+    display: none;
+    position: absolute;
+    bottom: 45px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(17, 24, 39, 0.95);
+    border: 1px solid #374151;
+    border-radius: 8px;
+    padding: 6px 0;
+    flex-direction: column;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+    z-index: 2147483648;
+    min-width: 60px;
+  `;
+
+  SPEED_OPTIONS.forEach(speed => {
+    const opt = document.createElement('div');
+    opt.textContent = speed.toFixed(1) + 'x';
+    opt.style.cssText = `
+      padding: 8px 16px;
+      font-size: 14px;
+      font-weight: 500;
+      color: #e5e7eb;
+      cursor: pointer;
+      text-align: center;
+      white-space: nowrap;
+      transition: background 0.2s;
+    `;
+    opt.onmouseover = () => opt.style.background = '#374151';
+    opt.onmouseout = () => opt.style.background = 'transparent';
+    opt.onclick = () => setSpeed(speed);
+    speedMenu.appendChild(opt);
+  });
+
+  speedContainer.appendChild(speedBtn);
+  speedContainer.appendChild(speedMenu);
 
   const prevBtn = createIconBtn('<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>', () => skipTo(currentPlaylistIndex - 1));
   const playPauseBtn = createIconBtn('<svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor" id="drama-play-icon"><path d="M8 5v14l11-7z"/></svg>', togglePlayPause);
   const nextBtn = createIconBtn('<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>', () => skipTo(currentPlaylistIndex + 1));
   const listBtn = createIconBtn('<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>', togglePlaylist);
 
+  controls.appendChild(speedContainer);
   controls.appendChild(prevBtn);
   controls.appendChild(playPauseBtn);
   controls.appendChild(nextBtn);
@@ -146,7 +228,7 @@ function updateTrackInfo(index) {
     const item = currentPlaylist[index];
     currentPlaylistIndex = index;
     // Show a snippet of the text
-    const snippet = item.text.length > 30 ? item.text.substring(0, 30) + '...' : item.text;
+    const snippet = item.fullText.length > 30 ? item.fullText.substring(0, 30) + '...' : item.fullText;
     trackInfo.textContent = `${item.author}: ${snippet}`;
   }
 
@@ -178,6 +260,26 @@ function togglePlayPause() {
   }
 }
 
+function toggleSpeedMenu() {
+  const menu = document.getElementById('drama-speed-menu');
+  if (menu.style.display === 'none' || menu.style.display === '') {
+    menu.style.display = 'flex';
+  } else {
+    menu.style.display = 'none';
+  }
+}
+
+function setSpeed(speed) {
+  currentSpeed = speed;
+  document.getElementById('drama-speed-btn').textContent = currentSpeed.toFixed(1) + 'x';
+  document.getElementById('drama-speed-menu').style.display = 'none';
+
+  // Apply HTML5 playbackRate instantly to the playing audio without restarting TTS backend
+  if (currentAudioElement) {
+    currentAudioElement.playbackRate = currentSpeed;
+  }
+}
+
 function skipTo(index) {
   if (index < 0 || index >= currentPlaylist.length) return;
 
@@ -188,6 +290,9 @@ function skipTo(index) {
     currentAudioElement = null;
   }
 
+  nextAudioBlob = null; // Invalidate pre-buffer when manually skipping
+  isFetchingNext = false;
+  currentSentenceIndex = 0; // Reset sentence inside the new post
   playSessionId++; // Invalidate current
   isPlaying = true;
   updatePlayPauseIcon();
@@ -209,10 +314,11 @@ function renderPlaylist() {
   view.innerHTML = '';
 
   currentPlaylist.forEach((item, idx) => {
+    if (!item || !item.fullText) return; // Safeguard corrupted items
     const row = document.createElement('div');
     row.className = `drama-playlist-item ${idx === currentPlaylistIndex ? 'active' : ''}`;
 
-    const snippet = item.text.length > 40 ? item.text.substring(0, 40) + '...' : item.text;
+    const snippet = item.fullText.length > 40 ? item.fullText.substring(0, 40) + '...' : item.fullText;
 
     row.innerHTML = `
       <span style="font-weight:bold; color: ${idx === currentPlaylistIndex ? '#fff' : '#9ca3af'}; min-width: 60px; overflow: hidden; text-overflow: ellipsis;">${item.author}</span>
@@ -245,7 +351,10 @@ function startDrama() {
 
   currentPlaylist = data;
   currentPlaylistIndex = 0;
+  currentSentenceIndex = 0;
   isPlaying = true; // Set to true after stopDrama() zeroes it
+  nextAudioBlob = null; // Clear queue
+  isFetchingNext = false;
   updatePlayPauseIcon();
   playSessionId++; // Start a new playback session
   playSequence(0, playSessionId);
@@ -274,6 +383,9 @@ function stopDrama() {
   isPlaying = false;
   playSessionId++; // Invalidate any running sequences
   currentPlaylist = [];
+  currentSentenceIndex = 0;
+  nextAudioBlob = null;
+  isFetchingNext = false;
   // Notice we DO NOT clear processTexts here, so lazy loading across multiple Plays won't duplicate.
   // Exception: if we want to truly start over, we click stop and then refresh page.
   clearHighlights();
@@ -321,10 +433,16 @@ function extractTwitter() {
         }
       });
 
+      // We still use Twitter's DOM node as a single element, no chunking needed usually since it's short,
+      // but to unify the data model we'll wrap it in array
       const uniqueKey = `${author}|${text}`;
       if (text && !processedTexts.has(uniqueKey)) {
         processedTexts.add(uniqueKey);
-        results.push({ author, text, element: textNode });
+        if (!isOmittedText(text)) {
+          results.push({ author, fullText: text, sentences: [text], element: textNode });
+        } else {
+          console.log("Skipping non-English dominant tweet:", text);
+        }
       }
     }
   });
@@ -334,46 +452,79 @@ function extractTwitter() {
 
 function extractReddit() {
   const results = [];
+  const isHomepage = document.querySelector('shreddit-feed') !== null;
 
-  // 1. Extract Main Post (New Reddit UI / shreddit)
-  const mainPost = document.querySelector('shreddit-post');
-  if (mainPost) {
-    const author = mainPost.getAttribute('author') || "OriginalPoster";
+  // Helper to chunk long texts homogeneously across all Reddit elements
+  const pushTextChunks = (author, fullText, targetElement) => {
+    // OVERRIDE FOR FEEDS: Truncate long feed posts to match visual length
+    if (isHomepage && fullText.length > 800 && targetElement.tagName === 'SHREDDIT-POST') {
+      fullText = fullText.substring(0, 800) + "... (Click into post to hear more.)";
+    }
 
-    // Attempt to grab text from shreddit-post-text-body (from your XPath)
-    const textBody = mainPost.querySelector('shreddit-post-text-body');
-    let text = "";
+    const chunks = fullText.split(/(?<=[.!?])\s+|[\n]+/);
+    let currentChunk = "";
+    const sentences = [];
+
+    chunks.forEach((chunk, i) => {
+      if (!chunk.trim()) return;
+      currentChunk += chunk + " ";
+
+      // Group sentences into chunks of rough 200 character blocks to reduce fetch overhead but keep TTS fast
+      if (currentChunk.length > 200 || i === chunks.length - 1) {
+        const finalStr = currentChunk.trim();
+        if (!isOmittedText(finalStr)) {
+          sentences.push(finalStr);
+        }
+        currentChunk = "";
+      }
+    });
+
+    if (sentences.length > 0) {
+      // Use the first sentence to denote uniqueness
+      const uniqueKey = `${author}|chunk_${sentences[0].substring(0, 20)}`;
+      if (!processedTexts.has(uniqueKey)) {
+        processedTexts.add(uniqueKey);
+        results.push({ author, fullText: sentences.join(" "), sentences: sentences, element: targetElement });
+      }
+    }
+  };
+
+  // 1. Extract Posts (handles both Single Thread and Homepage feeds)
+  const posts = document.querySelectorAll('shreddit-post');
+  posts.forEach(post => {
+    // Skip promoted/ad posts aggressively
+    if (post.hasAttribute('promoted') || Array.from(post.querySelectorAll('span, div, a')).some(el => el.textContent.trim().toLowerCase() === 'promoted')) {
+      return;
+    }
+
+    const author = post.getAttribute('author') || "OriginalPoster";
+    const title = post.getAttribute('post-title') || "";
+    let joinedText = title;
+
+    const textBody = post.querySelector('shreddit-post-text-body');
+    let targetElement = post;
 
     if (textBody) {
-      // Find all p tags inside the text body
       const pTags = textBody.querySelectorAll('p');
       if (pTags.length > 0) {
-        text = Array.from(pTags)
+        let bodyContent = Array.from(pTags)
           .filter(p => !p.closest('shreddit-comment'))
           .map(p => p.innerText.trim())
           .join('. ');
+        if (bodyContent) joinedText += ". " + bodyContent;
       } else {
-        text = textBody.innerText.trim();
-      }
-      const uniqueKey = `${author}|${text}`;
-      if (text && !processedTexts.has(uniqueKey)) {
-        processedTexts.add(uniqueKey);
-        results.push({ author, text, element: textBody });
+        joinedText += ". " + textBody.innerText.trim();
       }
     } else {
-      // Fallback if there's no text-body tag but there are p tags
-      let pTags = Array.from(mainPost.querySelectorAll('p'));
-      pTags = pTags.filter(p => !p.closest('shreddit-comment'));
+      let pTags = Array.from(post.querySelectorAll('p')).filter(p => !p.closest('shreddit-comment'));
       if (pTags.length > 0) {
-        text = pTags.map(p => p.innerText.trim()).join('. ');
-      }
-      const uniqueKey = `${author}|${text}`;
-      if (text && !processedTexts.has(uniqueKey)) {
-        processedTexts.add(uniqueKey);
-        results.push({ author, text, element: pTags.length > 0 ? pTags[0].parentElement : mainPost });
+        joinedText += ". " + pTags.map(p => p.innerText.trim()).join('. ');
       }
     }
-  }
+
+    if (!joinedText.trim()) return;
+    pushTextChunks(author, joinedText, targetElement);
+  });
 
   // 2. Extract Comments (New Reddit UI / shreddit)
   const shredditComments = document.querySelectorAll('shreddit-comment');
@@ -404,11 +555,7 @@ function extractReddit() {
         }
       }
 
-      const uniqueKey = `${author}|${text}`;
-      if (text && !processedTexts.has(uniqueKey)) {
-        processedTexts.add(uniqueKey);
-        results.push({ author, text, element: targetElement });
-      }
+      if (text) pushTextChunks(author, text, targetElement);
     });
   }
 
@@ -425,12 +572,7 @@ function extractReddit() {
       if (authorNode && textNode) {
         const author = authorNode.innerText.trim();
         const text = textNode.innerText.trim();
-        const uniqueKey = `${author}|${text}`;
-
-        if (text && !processedTexts.has(uniqueKey)) {
-          processedTexts.add(uniqueKey);
-          results.push({ author, text, element: textNode });
-        }
+        if (text) pushTextChunks(author, text, textNode);
       }
     });
   }
@@ -468,35 +610,52 @@ async function playSequence(index, sessionId) {
   }
 
   const item = currentPlaylist[index];
-  updateTrackInfo(index);
-
-  clearHighlights();
-  if (item.element) {
-    item.element.classList.add('drama-highlight');
-    item.element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  }
-
-  // Pre-filter: Check if the text contains heavily non-English characters (like pure Chinese/Japanese)
-  // because the English Kokoro model will violently fail and repeat "chinese letter" over and over.
-  // We'll allow spaces, punctuation, and English characters. If a string is mostly foreign, we skip it.
-  const englishCharRatio = (item.text.match(/[a-zA-Z]/g) || []).length / item.text.length;
-  if (item.text.length > 5 && englishCharRatio < 0.1) {
-    console.warn("Skipping non-English dominant text block:", item.text);
-    playSequence(index + 1, sessionId);
+  if (!item || !item.sentences || item.sentences.length === 0) {
+    console.error("Encountered corrupt playlist item:", item);
+    stopDrama();
     return;
+  }
+  const sentenceText = item.sentences[currentSentenceIndex];
+
+  // Only update UI scrolling and coloring if we are traversing the first sentence of a block
+  if (currentSentenceIndex === 0) {
+    updateTrackInfo(index);
+    clearHighlights();
+
+    // Verify Virtual DOM node validity
+    const isValidElement = (el, textMatch) => {
+      if (!el || !document.body.contains(el)) return false;
+      const snippet = textMatch.substring(0, 15).trim();
+      const content = el.textContent || el.innerText || "";
+      return content.includes(snippet);
+    };
+
+    if (isValidElement(item.element, item.fullText)) {
+      item.element.classList.add('drama-highlight');
+      item.element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } else {
+      window.scrollBy({ top: Math.min(window.innerHeight * 0.8, 800), behavior: 'smooth' });
+    }
   }
 
   try {
-    const response = await fetch('http://localhost:8000/synthesize', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ author: item.author, text: item.text })
-    });
+    let blob;
+    // Check if we hit the pre-fetched cache
+    if (nextAudioBlob) {
+      blob = nextAudioBlob;
+      nextAudioBlob = null; // Consume
+    } else {
+      const response = await fetch('http://localhost:8000/synthesize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ author: item.author, text: sentenceText })
+      });
 
-    if (sessionId !== playSessionId || !isPlaying) return;
-    if (!response.ok) throw new Error(`Backend Error: ${response.status}`);
+      if (sessionId !== playSessionId || !isPlaying) return;
+      if (!response.ok) throw new Error(`Backend Error: ${response.status}`);
+      blob = await response.blob();
+    }
 
-    const blob = await response.blob();
     if (sessionId !== playSessionId || !isPlaying) return;
 
     // Explicitly define the MIME type to satisfy Chrome
@@ -507,11 +666,26 @@ async function playSequence(index, sessionId) {
     currentAudioElement.src = audioUrl;
     currentAudioElement.type = 'audio/wav';
 
+    // Apply user selected speed natively
+    currentAudioElement.playbackRate = currentSpeed;
+
+    const determineNextIndices = () => {
+      let nextS = currentSentenceIndex + 1;
+      let nextP = index;
+      if (currentPlaylist[nextP] && nextS >= currentPlaylist[nextP].sentences.length) {
+        nextS = 0;
+        nextP++;
+      }
+      return { nextP, nextS };
+    };
+
     // When audio finishes naturally, move to the next item
     currentAudioElement.onended = () => {
       URL.revokeObjectURL(audioUrl);
       if (sessionId === playSessionId && isPlaying) {
-        playSequence(index + 1, sessionId);
+        const { nextP, nextS } = determineNextIndices();
+        currentSentenceIndex = nextS;
+        playSequence(nextP, sessionId);
       }
     };
 
@@ -519,7 +693,9 @@ async function playSequence(index, sessionId) {
       console.error("Audio playback error", e);
       URL.revokeObjectURL(audioUrl);
       if (sessionId === playSessionId && isPlaying) {
-        playSequence(index + 1, sessionId);
+        const { nextP, nextS } = determineNextIndices();
+        currentSentenceIndex = nextS;
+        playSequence(nextP, sessionId);
       }
     };
 
@@ -528,15 +704,44 @@ async function playSequence(index, sessionId) {
       console.error("Audio play promise rejected:", e);
       URL.revokeObjectURL(audioUrl);
       if (sessionId === playSessionId && isPlaying) {
-        playSequence(index + 1, sessionId);
+        const { nextP, nextS } = determineNextIndices();
+        currentSentenceIndex = nextS;
+        playSequence(nextP, sessionId);
       }
     });
+
+    // 🚀 ASYNC PRE-BUFFERING 🚀
+    // While the current audio is streaming out of speakers, we quietly fetch the *next* block in the background
+    const { nextP, nextS } = determineNextIndices();
+    if (nextP < currentPlaylist.length && sessionId === playSessionId && isPlaying) {
+      const nextSentence = currentPlaylist[nextP].sentences[nextS];
+      isFetchingNext = true;
+      fetch('http://localhost:8000/synthesize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ author: currentPlaylist[nextP].author, text: nextSentence })
+      })
+        .then(r => r.ok ? r.blob() : null)
+        .then(b => {
+          if (b && sessionId === playSessionId) nextAudioBlob = b;
+        })
+        .catch(e => console.error("Preload Next Failed:", e))
+        .finally(() => isFetchingNext = false);
+    }
 
   } catch (err) {
     console.error("TTS Failed:", err);
     // Proceed to next element if the backend has a hiccup
     if (sessionId === playSessionId && isPlaying) {
-      playSequence(index + 1, sessionId);
+      let nextS = currentSentenceIndex + 1;
+      let nextP = index;
+      if (nextS >= currentPlaylist[nextP].sentences.length) {
+        currentSentenceIndex = 0;
+        playSequence(nextP + 1, sessionId);
+      } else {
+        currentSentenceIndex = nextS;
+        playSequence(nextP, sessionId);
+      }
     }
   }
 }

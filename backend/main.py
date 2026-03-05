@@ -32,6 +32,7 @@ app.add_middleware(
 class TTSRequest(BaseModel):
     author: str
     text: str
+    speed: float = 1.0
 
 # Initialize the offline gender detector
 detector = gender.Detector(case_sensitive=False)
@@ -90,9 +91,12 @@ async def synthesize(req: TTSRequest):
         try:
             # Generate audio using Kokoro
             # The generator yields (graphemes, phonemes, audio)
+            
+            print(f"[DramaReader] Synthesizing -> [{req.author}]: {req.text[:50]}...")
+            
             generator = pipeline(
                 req.text, voice=voice_id,
-                speed=1, split_pattern=r'\n+'
+                speed=req.speed, split_pattern=r'\n+'
             )
             
             # Combine all generated audio fragments
