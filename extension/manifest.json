@@ -1,0 +1,22 @@
+{
+    "manifest_version": 3,
+    "name": "Drama Reader",
+    "version": "1.0",
+    "description": "Extract threads from Twitter and Reddit and read them aloud like a drama series.",
+    "permissions": [
+        "activeTab"
+    ],
+    "content_scripts": [
+        {
+            "matches": [
+                "*://*.twitter.com/*",
+                "*://x.com/*",
+                "*://*.reddit.com/*",
+                "*://reddit.com/*"
+            ],
+            "js": [
+                "content.js"
+            ]
+        }
+    ]
+}
