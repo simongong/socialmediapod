@@ -11,3 +11,5 @@ backend/venv/
 .DS_Store
 .env
 
+guideprep/node_modules
+guideprep/pnpm-lock.yaml

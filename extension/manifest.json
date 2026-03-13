@@ -4,7 +4,8 @@
     "version": "1.0",
     "description": "Extract threads from Twitter and Reddit and read them aloud like a drama series.",
     "permissions": [
-        "activeTab"
+        "activeTab",
+        "storage"
     ],
     "content_scripts": [
         {
@@ -17,6 +18,19 @@
             "js": [
                 "content.js"
             ]
+        },
+        {
+            "matches": [
+                "*://*.twitter.com/*",
+                "*://x.com/*",
+                "*://*.reddit.com/*",
+                "*://reddit.com/*"
+            ],
+            "js": [
+                "feed_interceptor.js"
+            ],
+            "world": "MAIN",
+            "run_at": "document_start"
         }
     ]
 }

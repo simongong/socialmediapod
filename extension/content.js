@@ -9,7 +9,42 @@ let isUIVisible = true;
 let currentSpeed = 1.0;
 let nextAudioBlob = null; // Pre-buffering queue for smooth transitions
 let isFetchingNext = false;
+let bookmarks = []; // Array of { id, text, author, url, timestamp }
+let isBookmarksViewVisible = false;
+let currentBookmarkPage = 1;
+const BOOKMARKS_PER_PAGE = 20;
+
+// Load bookmarks on start
+if (typeof chrome !== 'undefined' && chrome.storage) {
+  chrome.storage.local.get(['dramaBookmarks'], (result) => {
+    if (result.dramaBookmarks) {
+      bookmarks = result.dramaBookmarks;
+    }
+  });
+}
+
 const SPEED_OPTIONS = [0.8, 0.9, 1.0, 1.2, 1.4, 1.6];
+
+// Keyboard Shortcuts
+document.addEventListener('keydown', (e) => {
+  if (['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName) || document.activeElement.isContentEditable) return;
+  if (currentPlaylist.length === 0) return;
+
+  if (e.code === 'Space') {
+    e.preventDefault();
+    togglePlayPause();
+  } else if (e.code === 'ArrowLeft') {
+    e.preventDefault();
+    skipTo(currentPlaylistIndex - 1);
+  } else if (e.code === 'ArrowRight') {
+    e.preventDefault();
+    skipTo(currentPlaylistIndex + 1);
+  } else if (e.key.toLowerCase() === 'b') {
+    e.preventDefault();
+    toggleBookmark();
+  }
+});
+
 
 // Helper to determine if text is mostly non-English (e.g. pure Chinese/Japanese)
 // Kokoro's English models fail hard on these, so we omit them from the playlist.
@@ -30,6 +65,46 @@ new MutationObserver(() => {
     processedTexts.clear();
   }
 }).observe(document, { subtree: true, childList: true });
+
+// --- Feed Refresh Detection (AJAX without URL change) ---
+// Content scripts run in an isolated world and cannot intercept the page's fetch().
+// We inject a tiny script into the MAIN world that wraps fetch() and fires a
+// CustomEvent whenever the page makes a feed-related API call.
+
+let feedRefreshTimer = null;
+
+function onFeedRefreshed() {
+  // Debounce: wait for DOM to settle after the AJAX response is rendered
+  clearTimeout(feedRefreshTimer);
+  feedRefreshTimer = setTimeout(() => {
+    console.log("[Drama Reader] Feed refresh detected. Updating playlist.");
+
+    const domain = window.location.hostname;
+    let newData = [];
+    if (domain.includes('twitter.com') || domain.includes('x.com')) {
+      newData = extractTwitter();
+    } else if (domain.includes('reddit.com')) {
+      newData = extractReddit();
+    }
+
+    if (newData.length === 0) return;
+
+    if (currentPlaylist.length > 0) {
+      // If a playlist is active (playing or paused), append new items
+      currentPlaylist = currentPlaylist.concat(newData);
+      console.log(`[Drama Reader] Appended ${newData.length} new items. Total: ${currentPlaylist.length}`);
+      if (document.getElementById('drama-playlist-view')?.style.display !== 'none') {
+        renderPlaylist();
+      }
+    } else {
+      // No active playlist — just log; user can hit Play to pick up new content
+      console.log(`[Drama Reader] ${newData.length} new feed items available.`);
+    }
+  }, 2000);
+}
+
+// Listen for the custom event dispatched by feed_interceptor.js (runs in MAIN world)
+window.addEventListener('drama-reader-feed-refresh', onFeedRefreshed);
 
 function injectUI() {
   console.log("[Drama Reader] Injecting Modern UI into", window.location.href);
@@ -57,14 +132,20 @@ function injectUI() {
 
   // --- Header / Track Info ---
   const header = document.createElement('div');
-  header.style.cssText = `display: flex; justify-content: space-between; align-items: center;`;
+  header.style.cssText = `display: flex; justify-content: space-between; align-items: center; gap: 8px;`;
 
   const trackInfo = document.createElement('div');
   trackInfo.id = 'drama-track-info';
-  trackInfo.style.cssText = `font-size: 13px; font-weight: 500; color: #9ca3af; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 280px;`;
+  trackInfo.style.cssText = `flex: 1; font-size: 13px; font-weight: 500; color: #9ca3af; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 250px;`;
   trackInfo.textContent = 'Drama Reader Ready';
 
+  const starBtn = createIconBtn('<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" id="drama-star-icon"><path d="M22 9.24l-7.19-.62L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.63-7.03L22 9.24zM12 15.4l-3.76 2.27 1-4.28-3.32-2.88 4.38-.38L12 6.1l1.71 4.04 4.38.38-3.32 2.88 1 4.28L12 15.4z"/></svg>', toggleBookmark);
+  // Keep the star small in the header
+  starBtn.style.width = '32px';
+  starBtn.style.height = '32px';
+
   header.appendChild(trackInfo);
+  header.appendChild(starBtn);
 
   // --- Controls ---
   const controls = document.createElement('div');
@@ -81,6 +162,7 @@ function injectUI() {
     background: transparent;
     color: #e5e7eb;
     border: none;
+    outline: none;
     cursor: pointer;
     font-size: 13px;
     font-weight: 600;
@@ -136,12 +218,73 @@ function injectUI() {
   const playPauseBtn = createIconBtn('<svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor" id="drama-play-icon"><path d="M8 5v14l11-7z"/></svg>', togglePlayPause);
   const nextBtn = createIconBtn('<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>', () => skipTo(currentPlaylistIndex + 1));
   const listBtn = createIconBtn('<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>', togglePlaylist);
+  const bookmarksBtn = createIconBtn('<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2m0 15l-5-2.18L7 18V5h10v13z"/></svg>', toggleBookmarksView);
 
   controls.appendChild(speedContainer);
   controls.appendChild(prevBtn);
   controls.appendChild(playPauseBtn);
   controls.appendChild(nextBtn);
   controls.appendChild(listBtn);
+  controls.appendChild(bookmarksBtn);
+
+  // --- Bookmarks View Container ---
+  const bookmarksContainer = document.createElement('div');
+  bookmarksContainer.id = 'drama-bookmarks-view';
+  bookmarksContainer.style.cssText = `
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 250px;
+    margin-top: 8px;
+    padding-top: 12px;
+    border-top: 1px solid #374151;
+    font-size: 12px;
+  `;
+
+  const searchInput = document.createElement('input');
+  searchInput.id = 'drama-bookmarks-search';
+  searchInput.type = 'text';
+  searchInput.placeholder = 'Search bookmarks...';
+  searchInput.style.cssText = `
+    width: 100%;
+    padding: 6px 8px;
+    border-radius: 4px;
+    border: 1px solid #4b5563;
+    background: #1f2937;
+    color: white;
+    outline: none;
+    margin-bottom: 4px;
+    box-sizing: border-box;
+  `;
+  searchInput.addEventListener('input', () => {
+    currentBookmarkPage = 1;
+    renderBookmarksView();
+  });
+
+  const bookmarksList = document.createElement('div');
+  bookmarksList.id = 'drama-bookmarks-list';
+  bookmarksList.style.cssText = `
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  `;
+
+  bookmarksList.addEventListener('scroll', () => {
+    if (bookmarksList.scrollTop + bookmarksList.clientHeight >= bookmarksList.scrollHeight - 10) {
+      const searchEl = document.getElementById('drama-bookmarks-search');
+      const query = searchEl ? searchEl.value.toLowerCase() : '';
+      const filteredCount = bookmarks.filter(b => b.text.toLowerCase().includes(query) || b.author.toLowerCase().includes(query)).length;
+
+      if (currentBookmarkPage * BOOKMARKS_PER_PAGE < filteredCount) {
+        currentBookmarkPage++;
+        renderBookmarksView(true); // Append mode
+      }
+    }
+  });
+
+  bookmarksContainer.appendChild(searchInput);
+  bookmarksContainer.appendChild(bookmarksList);
 
   // --- Playlist Container ---
   const playlistContainer = document.createElement('div');
@@ -161,6 +304,7 @@ function injectUI() {
   container.appendChild(header);
   container.appendChild(controls);
   container.appendChild(playlistContainer);
+  container.appendChild(bookmarksContainer);
   document.body.appendChild(container);
 
   // Inject highlighting styles
@@ -187,6 +331,25 @@ function injectUI() {
       }
       .drama-playlist-item:hover { background: #374151; }
       .drama-playlist-item.active { background: #2563eb; color: white; }
+      .drama-bookmark-item {
+        padding: 6px 8px;
+        border-radius: 4px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        color: #d1d5db;
+        transition: background 0.2s;
+        border-bottom: 1px solid #374151;
+      }
+      .drama-bookmark-item:hover { background: #374151; }
+      .drama-bookmark-header { display: flex; justify-content: space-between; align-items: center; }
+      .drama-bookmark-author { font-weight: bold; color: #fff; cursor: pointer; }
+      .drama-bookmark-delete { color: #ef4444; cursor: pointer; opacity: 0.7; }
+      .drama-bookmark-delete:hover { opacity: 1; }
+      .drama-bookmark-text { cursor: pointer; opacity: 0.8; }
+      .drama-bookmark-date-group { font-size: 10px; color: #9ca3af; margin-top: 4px; border-bottom: 1px solid #374151; padding-bottom: 2px; text-transform: uppercase; font-weight: bold; }
+      #drama-bookmarks-list::-webkit-scrollbar { width: 6px; }
+      #drama-bookmarks-list::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 3px; }
     `;
     document.head.appendChild(style);
   }
@@ -206,6 +369,7 @@ function createIconBtn(svgHTML, onClick) {
     background: transparent;
     color: #e5e7eb;
     border: none;
+    outline: none;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -236,6 +400,173 @@ function updateTrackInfo(index) {
   if (playlistView.style.display !== 'none') {
     renderPlaylist();
   }
+  updateBookmarkIcon();
+}
+
+function getSourceUrl(item) {
+  if (window.location.hostname.includes('twitter.com') || window.location.hostname.includes('x.com')) {
+    const timeLink = item.element.closest('[data-testid="tweet"]')?.querySelector('a[href*="/status/"]');
+    if (timeLink) return timeLink.href;
+  }
+  if (window.location.hostname.includes('reddit.com')) {
+    const post = item.element.closest('shreddit-post');
+    if (post) return window.location.origin + post.getAttribute('permalink');
+  }
+  return window.location.href;
+}
+
+function updateBookmarkIcon() {
+  const btn = document.getElementById('drama-star-icon');
+  // Handle edge case where ID gets applied to the button or the SVG itself
+  const icon = btn?.tagName.toLowerCase() === 'svg' ? btn : btn?.querySelector('svg');
+  if (!icon) return;
+
+  if (currentPlaylist.length === 0) {
+    icon.innerHTML = '<path d="M22 9.24l-7.19-.62L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.63-7.03L22 9.24zM12 15.4l-3.76 2.27 1-4.28-3.32-2.88 4.38-.38L12 6.1l1.71 4.04 4.38.38-3.32 2.88 1 4.28L12 15.4z"/>';
+    icon.style.color = '#e5e7eb';
+    return;
+  }
+
+  const item = currentPlaylist[currentPlaylistIndex];
+  const snippet = item.fullText.length > 60 ? item.fullText.substring(0, 60) + '...' : item.fullText;
+  const id = `${item.author}|${snippet}`;
+
+  if (bookmarks.some(b => b.id === id)) {
+    icon.innerHTML = '<path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>';
+    icon.style.color = '#eab308'; // Highlighted yellow
+  } else {
+    icon.innerHTML = '<path d="M22 9.24l-7.19-.62L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.63-7.03L22 9.24zM12 15.4l-3.76 2.27 1-4.28-3.32-2.88 4.38-.38L12 6.1l1.71 4.04 4.38.38-3.32 2.88 1 4.28L12 15.4z"/>';
+    icon.style.color = '#e5e7eb'; // Default gray
+  }
+}
+
+function toggleBookmark() {
+  if (currentPlaylist.length === 0) return;
+  const item = currentPlaylist[currentPlaylistIndex];
+  if (!item) return;
+
+  const url = getSourceUrl(item);
+  const snippet = item.fullText.length > 60 ? item.fullText.substring(0, 60) + '...' : item.fullText;
+  const id = `${item.author}|${snippet}`;
+
+  const existingIndex = bookmarks.findIndex(b => b.id === id);
+  if (existingIndex >= 0) {
+    bookmarks.splice(existingIndex, 1);
+  } else {
+    bookmarks.unshift({
+      id,
+      text: item.fullText,
+      author: item.author,
+      url: url,
+      timestamp: Date.now()
+    });
+  }
+
+  if (typeof chrome !== 'undefined' && chrome.storage) {
+    chrome.storage.local.set({ dramaBookmarks: bookmarks });
+  }
+  updateBookmarkIcon();
+  if (document.getElementById('drama-bookmarks-view').style.display !== 'none') {
+    renderBookmarksView();
+  }
+}
+
+function deleteBookmark(id, event) {
+  if (event) event.stopPropagation();
+  bookmarks = bookmarks.filter(b => b.id !== id);
+  if (typeof chrome !== 'undefined' && chrome.storage) {
+    chrome.storage.local.set({ dramaBookmarks: bookmarks });
+  }
+  updateBookmarkIcon();
+  renderBookmarksView();
+}
+
+function toggleBookmarksView() {
+  const view = document.getElementById('drama-bookmarks-view');
+  const plView = document.getElementById('drama-playlist-view');
+  if (view.style.display === 'none' || view.style.display === '') {
+    if (plView) plView.style.display = 'none';
+    view.style.display = 'flex';
+    currentBookmarkPage = 1;
+    renderBookmarksView();
+  } else {
+    view.style.display = 'none';
+  }
+}
+
+let lastBookmarkDateGroup = null;
+
+function renderBookmarksView(append = false) {
+  const list = document.getElementById('drama-bookmarks-list');
+  if (!list) return;
+
+  const searchEl = document.getElementById('drama-bookmarks-search');
+  const query = searchEl ? searchEl.value.toLowerCase() : '';
+
+  if (!append) {
+    list.innerHTML = '';
+    lastBookmarkDateGroup = null;
+  }
+
+  // Ensure bookmarks are strictly sorted newest first
+  const sortedBookmarks = [...bookmarks].sort((a, b) => b.timestamp - a.timestamp);
+
+  const filtered = sortedBookmarks.filter(b =>
+    b.text.toLowerCase().includes(query) || b.author.toLowerCase().includes(query)
+  );
+
+  if (filtered.length === 0 && !append) {
+    list.innerHTML = '<div style="text-align:center; color:#9ca3af; padding: 10px;">No bookmarks found.</div>';
+    return;
+  }
+
+  const startIndex = append ? (currentBookmarkPage - 1) * BOOKMARKS_PER_PAGE : 0;
+  const sliceToRender = filtered.slice(startIndex, currentBookmarkPage * BOOKMARKS_PER_PAGE);
+
+  sliceToRender.forEach((b, index) => {
+    const d = new Date(b.timestamp);
+    const dateStr = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+
+    // We only inject a grouping header if:
+    // 1. It differs from the globally tracked lastBookmarkDateGroup (useful for pagination appends)
+    // 2. OR it is the very first item in the entirely new render (non-append)
+    if (dateStr !== lastBookmarkDateGroup || (!append && index === 0)) {
+      const groupEl = document.createElement('div');
+      groupEl.className = 'drama-bookmark-date-group';
+      groupEl.textContent = dateStr;
+      list.appendChild(groupEl);
+      lastBookmarkDateGroup = dateStr;
+    }
+
+    const row = document.createElement('div');
+    row.className = 'drama-bookmark-item';
+
+    const header = document.createElement('div');
+    header.className = 'drama-bookmark-header';
+
+    const authorSpan = document.createElement('span');
+    authorSpan.className = 'drama-bookmark-author';
+    authorSpan.textContent = b.author;
+    authorSpan.onclick = () => window.open(b.url, '_blank');
+
+    const delSpan = document.createElement('span');
+    delSpan.className = 'drama-bookmark-delete';
+    delSpan.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>';
+    delSpan.onclick = (e) => deleteBookmark(b.id, e);
+
+    header.appendChild(authorSpan);
+    header.appendChild(delSpan);
+
+    const textSpan = document.createElement('div');
+    textSpan.className = 'drama-bookmark-text';
+    const snippet = b.text.length > 80 ? b.text.substring(0, 80) + '...' : b.text;
+    textSpan.textContent = snippet;
+    textSpan.onclick = () => window.open(b.url, '_blank');
+
+    row.appendChild(header);
+    row.appendChild(textSpan);
+    list.appendChild(row);
+  });
 }
 
 function updatePlayPauseIcon() {
@@ -301,7 +632,9 @@ function skipTo(index) {
 
 function togglePlaylist() {
   const view = document.getElementById('drama-playlist-view');
+  const bkView = document.getElementById('drama-bookmarks-view');
   if (view.style.display === 'none' || view.style.display === '') {
+    if (bkView) bkView.style.display = 'none';
     view.style.display = 'flex';
     renderPlaylist();
   } else {
@@ -391,6 +724,7 @@ function stopDrama() {
   clearHighlights();
   document.getElementById('drama-track-info').textContent = 'Drama Reader Ready';
   updatePlayPauseIcon();
+  updateBookmarkIcon();
   if (currentAudioElement) {
     currentAudioElement.pause();
     currentAudioElement.removeAttribute('src'); // Completely detach audio
