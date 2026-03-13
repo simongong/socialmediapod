@@ -59,7 +59,7 @@ let currentUrl = location.href;
 new MutationObserver(() => {
   const url = location.href;
   if (url !== currentUrl) {
-    console.log("[Drama Reader] Navigation detected. Resetting playlist.");
+    console.log("[Voice Social] Navigation detected. Resetting playlist.");
     currentUrl = url;
     stopDrama();
     processedTexts.clear();
@@ -77,7 +77,7 @@ function onFeedRefreshed() {
   // Debounce: wait for DOM to settle after the AJAX response is rendered
   clearTimeout(feedRefreshTimer);
   feedRefreshTimer = setTimeout(() => {
-    console.log("[Drama Reader] Feed refresh detected. Updating playlist.");
+    console.log("[Voice Social] Feed refresh detected. Updating playlist.");
 
     const domain = window.location.hostname;
     let newData = [];
@@ -92,13 +92,13 @@ function onFeedRefreshed() {
     if (currentPlaylist.length > 0) {
       // If a playlist is active (playing or paused), append new items
       currentPlaylist = currentPlaylist.concat(newData);
-      console.log(`[Drama Reader] Appended ${newData.length} new items. Total: ${currentPlaylist.length}`);
+      console.log(`[Voice Social] Appended ${newData.length} new items. Total: ${currentPlaylist.length}`);
       if (document.getElementById('drama-playlist-view')?.style.display !== 'none') {
         renderPlaylist();
       }
     } else {
       // No active playlist — just log; user can hit Play to pick up new content
-      console.log(`[Drama Reader] ${newData.length} new feed items available.`);
+      console.log(`[Voice Social] ${newData.length} new feed items available.`);
     }
   }, 2000);
 }
@@ -107,7 +107,7 @@ function onFeedRefreshed() {
 window.addEventListener('drama-reader-feed-refresh', onFeedRefreshed);
 
 function injectUI() {
-  console.log("[Drama Reader] Injecting Modern UI into", window.location.href);
+  console.log("[Voice Social] Injecting Modern UI into", window.location.href);
 
   const container = document.createElement('div');
   container.id = 'drama-reader-ui';
@@ -137,7 +137,7 @@ function injectUI() {
   const trackInfo = document.createElement('div');
   trackInfo.id = 'drama-track-info';
   trackInfo.style.cssText = `flex: 1; font-size: 13px; font-weight: 500; color: #9ca3af; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 250px;`;
-  trackInfo.textContent = 'Drama Reader Ready';
+  trackInfo.textContent = 'Voice Social Ready';
 
   const starBtn = createIconBtn('<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" id="drama-star-icon"><path d="M22 9.24l-7.19-.62L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.63-7.03L22 9.24zM12 15.4l-3.76 2.27 1-4.28-3.32-2.88 4.38-.38L12 6.1l1.71 4.04 4.38.38-3.32 2.88 1 4.28L12 15.4z"/></svg>', toggleBookmark);
   // Keep the star small in the header
@@ -722,7 +722,7 @@ function stopDrama() {
   // Notice we DO NOT clear processTexts here, so lazy loading across multiple Plays won't duplicate.
   // Exception: if we want to truly start over, we click stop and then refresh page.
   clearHighlights();
-  document.getElementById('drama-track-info').textContent = 'Drama Reader Ready';
+  document.getElementById('drama-track-info').textContent = 'Voice Social Ready';
   updatePlayPauseIcon();
   updateBookmarkIcon();
   if (currentAudioElement) {
