@@ -1,8 +1,13 @@
 {
     "manifest_version": 3,
-    "name": "Drama Reader",
+    "name": "VoiceSocial",
     "version": "1.0",
-    "description": "Extract threads from Twitter and Reddit and read them aloud like a drama series.",
+    "icons": {
+        "16": "icons/icon16.png",
+        "48": "icons/icon48.png",
+        "128": "icons/icon128.png"
+    },
+    "description": "Read threads from Reddit and Twitter like a drama conversation.",
     "permissions": [
         "activeTab",
         "storage"

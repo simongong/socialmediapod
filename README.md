@@ -1,6 +1,6 @@
-# Drama Reader (Social Media Pod) 🎧
+# Voice Social(Social Media Pod)🎧
 
-**Drama Reader** 是一款基于大模型本地化能力与浏览器生态构建的沉浸式社交媒体听读工具（Chrome Extension + Python FastAPI）。
+**Voice Social** 是一款基于大模型本地化能力与浏览器生态构建的沉浸式社交媒体听读工具（Chrome Extension + Python FastAPI）。
 它可以将长篇的 Twitter (X) 和 Reddit 讨论贴瞬间转化为带有角色扮演的“广播剧”，用语音依次自动播放讨论内容，页面跟随滚动，就像大家在聊天一样。
 
 ![项目演示](demo.gif)
