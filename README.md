@@ -46,13 +46,17 @@
    ```
    *服务启动后将在本地 `http://localhost:8000` 监听插件的合成请求。*
 
-### 1.2 安装 Chrome 浏览器插件
+### 1.2 使用 Docker 部署 (推荐 🐳)
+如果你不想在本地配置 Python 环境，可以使用 Docker 一键部署：
+1. 请参考 [Docker 部署手册 (DOCKER.md)](DOCKER.md) 进行操作。
+
+### 1.3 安装 Chrome 浏览器插件
 1. 打开 Google Chrome，在地址栏输入 `chrome://extensions/`。
 2. 在页面右上角开启 **开发者模式 (Developer mode)**。
 3. 点击左上角的 **加载已解压的扩展程序 (Load unpacked)**。
 4. 选择本项目中的 `socialmediapod/extension` 文件夹。
 
-### 1.3 开始听着刷帖子
+### 1.4 开始听着刷帖子
 * 保持你的 Python 后端服务在终端中运行。
 * 浏览器访问任意英文的 Reddit 帖子或 Twitter Thread。
 * 页面右下角会出现一个浮窗播放器。
